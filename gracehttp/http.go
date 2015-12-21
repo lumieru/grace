@@ -5,7 +5,6 @@ package gracehttp
 import (
 	"bytes"
 	"crypto/tls"
-	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -20,7 +19,6 @@ import (
 )
 
 var (
-	verbose    = flag.Bool("gracehttp.log", true, "Enable logging.")
 	didInherit = os.Getenv("LISTEN_FDS") != ""
 	ppid       = os.Getppid()
 )
@@ -33,12 +31,16 @@ type app struct {
 	listeners []net.Listener
 	sds       []httpdown.Server
 	errors    chan error
+	log 	  *log.Logger
 }
 
-func newApp(servers []*http.Server) *app {
+func newApp(httpdownConf *httpdown.HTTP, log *log.Logger, servers []*http.Server) *app {
+	if httpdownConf == nil {
+		httpdownConf = &httpdown.HTTP{}
+	}
 	return &app{
 		servers:   servers,
-		http:      &httpdown.HTTP{},
+		http:      httpdownConf,
 		net:       &gracenet.Net{},
 		listeners: make([]net.Listener, 0, len(servers)),
 		sds:       make([]httpdown.Server, 0, len(servers)),
@@ -46,6 +48,7 @@ func newApp(servers []*http.Server) *app {
 		// 2x num servers for possible Close or Stop errors + 1 for possible
 		// StartProcess error.
 		errors: make(chan error, 1+(len(servers)*2)),
+		log: log,
 	}
 }
 
@@ -105,12 +108,18 @@ func (a *app) signalHandler(wg *sync.WaitGroup) {
 		case syscall.SIGTERM:
 			// this ensures a subsequent TERM will trigger standard go behaviour of
 			// terminating.
+			if a.isVerbose() {
+				a.log.Printf("Pid %d received signal SIGTERM and try to shut down gracefully.", os.Getpid())
+			}
 			signal.Stop(ch)
 			a.term(wg)
 			return
 		case syscall.SIGUSR2:
 			// we only return here if there's an error, otherwise the new process
 			// will send us a TERM when it's ready to trigger the actual shutdown.
+			if a.isVerbose() {
+				a.log.Printf("Pid %d received signal SIGUSR2 and try to restart gracefully.", os.Getpid())
+			}
 			if _, err := a.net.StartProcess(); err != nil {
 				a.errors <- err
 			}
@@ -118,10 +127,14 @@ func (a *app) signalHandler(wg *sync.WaitGroup) {
 	}
 }
 
+func (a *app) isVerbose() bool {
+	return a.log != nil
+}
+
 // Serve will serve the given http.Servers and will monitor for signals
 // allowing for graceful termination (SIGTERM) or restart (SIGUSR2).
-func Serve(servers ...*http.Server) error {
-	a := newApp(servers)
+func Serve(httpdownConf *httpdown.HTTP, log *log.Logger, servers ...*http.Server) error {
+	a := newApp(httpdownConf, log, servers)
 
 	// Acquire Listeners
 	if err := a.listen(); err != nil {
@@ -129,17 +142,17 @@ func Serve(servers ...*http.Server) error {
 	}
 
 	// Some useful logging.
-	if *verbose {
+	if a.isVerbose() {
 		if didInherit {
 			if ppid == 1 {
-				log.Printf("Listening on init activated %s", pprintAddr(a.listeners))
+				a.log.Printf("Listening on init activated %s", pprintAddr(a.listeners))
 			} else {
 				const msg = "Graceful handoff of %s with new pid %d and old pid %d"
-				log.Printf(msg, pprintAddr(a.listeners), os.Getpid(), ppid)
+				a.log.Printf(msg, pprintAddr(a.listeners), os.Getpid(), ppid)
 			}
 		} else {
 			const msg = "Serving %s with pid %d"
-			log.Printf(msg, pprintAddr(a.listeners), os.Getpid())
+			a.log.Printf(msg, pprintAddr(a.listeners), os.Getpid())
 		}
 	}
 
@@ -166,8 +179,8 @@ func Serve(servers ...*http.Server) error {
 		}
 		return err
 	case <-waitdone:
-		if *verbose {
-			log.Printf("Exiting pid %d.", os.Getpid())
+		if a.isVerbose() {
+			a.log.Printf("Exiting pid %d.", os.Getpid())
 		}
 		return nil
 	}
