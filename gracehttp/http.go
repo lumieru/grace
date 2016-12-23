@@ -31,7 +31,7 @@ type app struct {
 	listeners []net.Listener
 	sds       []httpdown.Server
 	errors    chan error
-	log 	  *log.Logger
+	log       *log.Logger
 }
 
 func newApp(httpdownConf *httpdown.HTTP, log *log.Logger, servers []*http.Server) *app {
@@ -48,7 +48,7 @@ func newApp(httpdownConf *httpdown.HTTP, log *log.Logger, servers []*http.Server
 		// 2x num servers for possible Close or Stop errors + 1 for possible
 		// StartProcess error.
 		errors: make(chan error, 1+(len(servers)*2)),
-		log: log,
+		log:    log,
 	}
 }
 
